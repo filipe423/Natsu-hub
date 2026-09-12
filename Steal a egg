@@ -1,0 +1,728 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local TeleportService = game:GetService("TeleportService")
+local Workspace = game:GetService("Workspace")
+
+local runtimeEnv = getgenv and getgenv() or _G
+
+runtimeEnv.__NatsuIdentityGetter = runtimeEnv.getthreadidentity
+	or runtimeEnv.get_thread_identity
+	or runtimeEnv.getidentity
+	or runtimeEnv.getthreadcontext
+	or runtimeEnv.get_thread_context
+runtimeEnv.__NatsuIdentitySetter = runtimeEnv.setthreadidentity
+	or runtimeEnv.set_thread_identity
+	or runtimeEnv.setidentity
+	or runtimeEnv.setthreadcontext
+	or runtimeEnv.set_thread_context
+
+do
+	local getter = runtimeEnv.__NatsuIdentityGetter
+	if type(getter) == "function" then
+		local ok, identity = pcall(getter)
+		if ok then runtimeEnv.__NatsuUICapabilityIdentity = identity end
+	elseif type(runtimeEnv.__NatsuIdentitySetter) == "function" then
+		runtimeEnv.__NatsuUICapabilityIdentity = 8
+	end
+end
+
+runtimeEnv.__NatsuEnterUICallback = function()
+	local setter = runtimeEnv.__NatsuIdentitySetter
+	local identity = runtimeEnv.__NatsuUICapabilityIdentity
+	if type(setter) == "function" and identity ~= nil then pcall(setter, identity) end
+end
+
+runtimeEnv.__NatsuRunUICallback = function(callback, ...)
+	local getter = runtimeEnv.__NatsuIdentityGetter
+	local setter = runtimeEnv.__NatsuIdentitySetter
+	local previousIdentity
+	if type(getter) == "function" then
+		local ok, value = pcall(getter)
+		if ok then previousIdentity = value end
+	end
+	local identity = runtimeEnv.__NatsuUICapabilityIdentity
+	if type(setter) == "function" and identity ~= nil then pcall(setter, identity) end
+	local results = table.pack(pcall(callback, ...))
+	if type(setter) == "function" and previousIdentity ~= nil then
+		pcall(setter, previousIdentity)
+	end
+	if not results[1] then error(results[2], 0) end
+	return table.unpack(results, 2, results.n)
+end
+
+runtimeEnv.__NatsuWrapUICallback = function(callback)
+	if type(callback) ~= "function" then return callback end
+	return function(...)
+		return runtimeEnv.__NatsuRunUICallback(callback, ...)
+	end
+end
+
+runtimeEnv.__NatsuResolveUIHost = function()
+	local cached = runtimeEnv.__NatsuUIHost
+	if typeof(cached) == "Instance"
+		and cached.Parent ~= nil
+		and cached.Name ~= "RobloxGui"
+	then
+		local probe = Instance.new("Folder")
+		probe.Name = "__NatsuCoreGuiProbe"
+		local ok = pcall(function() probe.Parent = cached end)
+		pcall(probe.Destroy, probe)
+		if ok then return cached end
+	end
+
+	local candidates = {}
+	local seen = {}
+	local function addCandidate(candidate)
+		if typeof(candidate) == "Instance"
+			and candidate.Name ~= "RobloxGui"
+			and not seen[candidate]
+		then
+			seen[candidate] = true
+			table.insert(candidates, candidate)
+		end
+	end
+
+	for _, getterName in ipairs({ "gethui", "get_hidden_gui", "gethiddengui" }) do
+		local getter = runtimeEnv[getterName]
+		if type(getter) == "function" then
+			local ok, result = pcall(getter)
+			if ok then addCandidate(result) end
+		end
+	end
+
+	local okCore, coreResult = pcall(function()
+		local coreGui = game:GetService("CoreGui")
+		local clone = runtimeEnv.cloneref
+		return type(clone) == "function" and clone(coreGui) or coreGui
+	end)
+	if okCore then addCandidate(coreResult) end
+
+	local lastError = "CoreGui host unavailable"
+	for _, candidate in ipairs(candidates) do
+		local probe = Instance.new("Folder")
+		probe.Name = "__NatsuCoreGuiProbe"
+		local ok, err = pcall(function() probe.Parent = candidate end)
+		pcall(probe.Destroy, probe)
+		if ok then
+			runtimeEnv.__NatsuUIHost = candidate
+			return candidate
+		end
+		lastError = tostring(err)
+	end
+
+	runtimeEnv.__NatsuUIHost = nil
+	return nil, lastError
+end
+
+runtimeEnv.__NatsuParentGui = function(gui)
+	local host, err = runtimeEnv.__NatsuResolveUIHost()
+	if not host or typeof(gui) ~= "Instance" then return false, err end
+	local synApi = runtimeEnv.syn
+	local protector = synApi and synApi.protect_gui or runtimeEnv.protect_gui
+	if type(protector) == "function" then
+		pcall(protector, gui)
+	end
+	local ok, parentErr = pcall(function() gui.Parent = host end)
+	return ok, parentErr
+end
+
+do
+	local host, err = runtimeEnv.__NatsuResolveUIHost()
+	if not host then warn("[NatsuUI] CoreGui unavailable: " .. tostring(err)) end
+end
+
+pcall(function()
+	local staleNames = {
+		"NatsuOnTop",
+		"ToggleUINatsu",
+		"NotifyGui",
+		"NatsuDiscordPrompt",
+		"NatsuEggPanelUI",
+	}
+	local containers = {}
+	local seenContainers = {}
+	local function addContainer(container)
+		if typeof(container) == "Instance" and not seenContainers[container] then
+			seenContainers[container] = true
+			table.insert(containers, container)
+		end
+	end
+	addContainer(LocalPlayer:FindFirstChildOfClass("PlayerGui"))
+	addContainer(runtimeEnv.__NatsuUIHost)
+	for _, getterName in ipairs({ "gethui", "get_hidden_gui", "gethiddengui" }) do
+		local getter = runtimeEnv[getterName]
+		if type(getter) == "function" then
+			local ok, hui = pcall(getter)
+			if ok then addContainer(hui) end
+		end
+	end
+	for _, container in ipairs(containers) do
+		for _, name in ipairs(staleNames) do
+			local stale = container and container:FindFirstChild(name)
+			if stale then stale:Destroy() end
+		end
+	end
+end)
+
+if type(runtimeEnv.__NatsuTweenRuntimeCleanup) == "function" then
+	pcall(runtimeEnv.__NatsuTweenRuntimeCleanup)
+end
+runtimeEnv.__NatsuTweenRuntimeGeneration = (runtimeEnv.__NatsuTweenRuntimeGeneration or 0) + 1
+local tweenRuntimeGeneration = runtimeEnv.__NatsuTweenRuntimeGeneration
+
+local SPOOF_CFG = {
+	KEY = "__NatsuStealAnEggMovementSpoof",
+	VERSION = 436,
+	INTEGRITY_KEY = "__NatsuStealAnEggIntegritySpoof",
+	SIGNAL = "ClientCharacter: GetDebugSnapshot",
+	HEADROOM = 1.35,
+	CLAMP = 0.15,
+	PADDING = 24,
+	MULTIPLIER = 10,
+	MIN_INPUT = 1,
+	MAX_INPUT = 100,
+	DEF_INPUT = 40,
+	MIN_SPEED = 10,
+	MAX_SPEED = 1000,
+	DEF_SPEED = 400,
+	FIELDS = {
+		"LastObservedSample", "LastSample", "LastGoodSample",
+		"LastGameplayTrustedSample", "LastValidatedSample",
+		"LastValidatedGroundedSample", "LastConfirmedGroundSample",
+		"CandidateGroundedSample"
+	}
+}
+
+local MOVEMENT_SPOOF_KEY = SPOOF_CFG.KEY
+local MOVEMENT_SPOOF_VERSION = SPOOF_CFG.VERSION
+local INTEGRITY_SPOOF_KEY = SPOOF_CFG.INTEGRITY_KEY
+local INTEGRITY_SIGNAL_NAME = SPOOF_CFG.SIGNAL
+local INTEGRITY_SPEED_HEADROOM = SPOOF_CFG.HEADROOM
+local LONG_FRAME_CLAMP = SPOOF_CFG.CLAMP
+local MOVEMENT_BASELINE_PADDING = SPOOF_CFG.PADDING
+local MOVEMENT_SPEED_MULTIPLIER = SPOOF_CFG.MULTIPLIER
+local MIN_MOVEMENT_SPEED_INPUT = SPOOF_CFG.MIN_INPUT
+local MAX_MOVEMENT_SPEED_INPUT = SPOOF_CFG.MAX_INPUT
+local DEFAULT_MOVEMENT_SPEED_INPUT = SPOOF_CFG.DEF_INPUT
+local MIN_MOVEMENT_SPEED = SPOOF_CFG.MIN_SPEED
+local MAX_MOVEMENT_SPEED = SPOOF_CFG.MAX_SPEED
+local DEFAULT_MOVEMENT_SPEED = SPOOF_CFG.DEF_SPEED
+local INTEGRITY_SAMPLE_FIELDS = SPOOF_CFG.FIELDS
+
+-- ===== HOVER PAD ENGINE =====
+local HOVER_PAD_SIZE_XZ = 8
+local HOVER_PAD_THICKNESS = 1
+local HOVER_PAD_NAME = "__NatsuHoverPad"
+local HOVER_PAD_OWNER_ATTRIBUTE = "NatsuStealRuntimeOwner"
+
+local hoverPadInstance = nil
+local hoverPadOwnerId = tostring(math.random(100000, 999999))
+local hoverPadConnection = nil
+local hoverPadPostConnection = nil
+local activeMoves = {}
+local tweenArrivalHold = nil
+
+local function purgeOrphanHoverPads()
+	for _, obj in ipairs(Workspace:GetChildren()) do
+		if obj:IsA("BasePart") and obj.Name == HOVER_PAD_NAME and obj ~= hoverPadInstance then
+			pcall(obj.Destroy, obj)
+		end
+	end
+end
+
+local function syncHoverPad(targetPos)
+	if not hoverPadInstance or not hoverPadInstance.Parent then return false end
+	local character = LocalPlayer.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not root or not humanoid then return false end
+	local rootPosition = typeof(targetPos) == "Vector3" and targetPos or root.Position
+	local feetOffset = humanoid.RigType == Enum.HumanoidRigType.R15
+		and (root.Size.Y * 0.5 + math.max(humanoid.HipHeight, 0.5))
+		or (root.Size.Y * 0.5 + 2)
+	hoverPadInstance.CFrame = CFrame.new(
+		rootPosition.X,
+		rootPosition.Y - feetOffset - HOVER_PAD_THICKNESS * 0.5 - 0.05,
+		rootPosition.Z
+	)
+	return true
+end
+
+local function startHoverPad()
+	if not hoverPadInstance or not hoverPadInstance.Parent or hoverPadInstance:GetAttribute(HOVER_PAD_OWNER_ATTRIBUTE) ~= hoverPadOwnerId then
+		purgeOrphanHoverPads()
+		if hoverPadInstance and hoverPadInstance.Parent then pcall(hoverPadInstance.Destroy, hoverPadInstance) end
+		local part = Instance.new("Part")
+		part.Name = HOVER_PAD_NAME
+		part:SetAttribute(HOVER_PAD_OWNER_ATTRIBUTE, hoverPadOwnerId)
+		part.Anchored = true
+		part.CanCollide = true
+		part.CanQuery = true
+		part.CanTouch = false
+		part.CastShadow = false
+		part.Transparency = 1
+		part.Material = Enum.Material.SmoothPlastic
+		part.Size = Vector3.new(HOVER_PAD_SIZE_XZ, HOVER_PAD_THICKNESS, HOVER_PAD_SIZE_XZ)
+		hoverPadInstance = part
+		part.Parent = Workspace
+	end
+	syncHoverPad()
+	if not hoverPadConnection then
+		hoverPadConnection = RunService.PreSimulation:Connect(function()
+			if not syncHoverPad() then startHoverPad() end
+		end)
+	end
+	if not hoverPadPostConnection then
+		hoverPadPostConnection = RunService.PostSimulation:Connect(function()
+			syncHoverPad()
+		end)
+	end
+end
+
+local function stopHoverPad()
+	if hoverPadConnection then
+		pcall(hoverPadConnection.Disconnect, hoverPadConnection)
+		hoverPadConnection = nil
+	end
+	if hoverPadPostConnection then
+		pcall(hoverPadPostConnection.Disconnect, hoverPadPostConnection)
+		hoverPadPostConnection = nil
+	end
+	if hoverPadInstance then
+		pcall(hoverPadInstance.Destroy, hoverPadInstance)
+		hoverPadInstance = nil
+	end
+	purgeOrphanHoverPads()
+end
+
+stopHoverPad()
+
+local function clearTweenArrivalHold()
+	tweenArrivalHold = nil
+end
+
+local function setTweenArrivalHold(root, destination)
+	if root and typeof(destination) == "CFrame" then
+		tweenArrivalHold = {
+			Character = LocalPlayer.Character,
+			RootPart = root,
+			CFrame = destination,
+		}
+	end
+end
+
+local function enforceTweenArrivalHold()
+	local hold = tweenArrivalHold
+	if type(hold) ~= "table" or typeof(hold.CFrame) ~= "CFrame" then return false end
+	if LocalPlayer.Character ~= hold.Character or not hold.RootPart or not hold.RootPart.Parent then
+		tweenArrivalHold = nil
+		return false
+	end
+	startHoverPad()
+	hold.RootPart.AssemblyLinearVelocity = Vector3.zero
+	hold.RootPart.AssemblyAngularVelocity = Vector3.zero
+	syncHoverPad(hold.CFrame.Position)
+	hold.RootPart.CFrame = hold.CFrame
+	syncHoverPad(hold.CFrame.Position)
+	return true
+end
+
+local function stopAllActiveMovements()
+	local char = LocalPlayer.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	for _, move in pairs(activeMoves) do
+		if type(move) == "table" then
+			move.cancelled = true
+		end
+	end
+	table.clear(activeMoves)
+	if hrp then
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		hrp.AssemblyAngularVelocity = Vector3.zero
+	end
+	clearTweenArrivalHold()
+	stopHoverPad()
+end
+
+runtimeEnv.__NatsuTweenRuntimeCleanup = function()
+	for _, move in pairs(activeMoves) do
+		if type(move) == "table" then move.cancelled = true end
+	end
+	table.clear(activeMoves)
+	clearTweenArrivalHold()
+	stopHoverPad()
+end
+
+-- ===== STATE BASELINE SPOOFING ENGINE =====
+local function environment()
+	return getgenv and getgenv() or _G
+end
+
+local function getMovementSpoof()
+	local env = environment()
+	local existing = env[MOVEMENT_SPOOF_KEY]
+	if type(existing) ~= "table" or existing.Version ~= MOVEMENT_SPOOF_VERSION then
+		if type(existing) == "table" then existing.Enabled = false end
+		existing = {
+			Version = MOVEMENT_SPOOF_VERSION,
+			Installed = false,
+			Enabled = false,
+			Mode = "StateBaseline",
+			Humanoid = nil,
+			RootPart = nil,
+			WalkSpeed = DEFAULT_MOVEMENT_SPEED,
+		}
+		env[MOVEMENT_SPOOF_KEY] = existing
+	end
+	return existing
+end
+
+local function setMovementSpoof(character, speed)
+	local holder = getMovementSpoof()
+	if not holder then return false end
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	holder.Humanoid = humanoid
+	holder.RootPart = root
+	holder.WalkSpeed = math.clamp(
+		tonumber(speed) or DEFAULT_MOVEMENT_SPEED,
+		MIN_MOVEMENT_SPEED,
+		MAX_MOVEMENT_SPEED * INTEGRITY_SPEED_HEADROOM
+	)
+	holder.Enabled = false
+	return humanoid ~= nil and root ~= nil
+end
+
+local function clearMovementSpoof()
+	local holder = environment()[MOVEMENT_SPOOF_KEY]
+	if type(holder) == "table" then
+		holder.Enabled = false
+		holder.Humanoid = nil
+		holder.RootPart = nil
+	end
+end
+
+local function findIntegrityState(player, humanoid, root)
+	local found = nil
+
+	if type(getcallbackvalue) == "function" and type(debug) == "table" and type(debug.getupvalue) == "function" then
+		local signalModule = ReplicatedStorage:FindFirstChild("Packages")
+			and ReplicatedStorage.Packages:FindFirstChild("Signal")
+		if signalModule then
+			local okSig, Signal = pcall(require, signalModule)
+			if okSig and type(Signal) == "table" and type(Signal.Invoked) == "function" then
+				local okBind, bindable = pcall(Signal.Invoked, INTEGRITY_SIGNAL_NAME)
+				if okBind and bindable then
+					local okCb, callback = pcall(getcallbackvalue, bindable, "OnInvoke")
+					if okCb and type(callback) == "function" then
+						local okInfo, info = pcall(debug.getinfo, callback)
+						if okInfo then
+							local function scan(value, depth, seen)
+								if found or type(value) ~= "table" or depth > 3 or seen[value] then return end
+								seen[value] = true
+								if rawget(value, "Player") == player
+									and rawget(value, "Character") == player.Character
+									and rawget(value, "Humanoid") == humanoid
+									and rawget(value, "RootPart") == root
+									and type(rawget(value, "SampleHistory")) == "table"
+									and type(rawget(value, "Evidence")) == "table"
+								then
+									found = value
+									return
+								end
+								local scanned = 0
+								for _, child in pairs(value) do
+									scanned = scanned + 1
+									if scanned > 128 then break end
+									if type(child) == "table" then scan(child, depth + 1, seen) end
+								end
+							end
+							for idx = 1, info.nups or 0 do
+								local okUp, upvalue = pcall(debug.getupvalue, callback, idx)
+								if okUp and type(upvalue) == "table" then
+									scan(upvalue, 0, {})
+									if found then break end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if not found and type(getgc) == "function" then
+		local okGc, objects = pcall(getgc, true)
+		if okGc and type(objects) == "table" then
+			for _, obj in ipairs(objects) do
+				if type(obj) == "table"
+					and rawget(obj, "Player") == player
+					and rawget(obj, "Character") == player.Character
+					and rawget(obj, "Humanoid") == humanoid
+					and rawget(obj, "RootPart") == root
+					and type(rawget(obj, "SampleHistory")) == "table"
+					and type(rawget(obj, "Evidence")) == "table"
+				then
+					found = obj
+					break
+				end
+			end
+		end
+	end
+	return found
+end
+
+local function patchIntegrityState(state, speed, travelVelocity)
+	if type(state) ~= "table" then return false end
+	local root = rawget(state, "RootPart")
+	local rootCFrame = root and root.Parent and root.CFrame or nil
+	local rootPosition = rootCFrame and rootCFrame.Position or nil
+	local coherentVelocity = typeof(travelVelocity) == "Vector3" and travelVelocity or Vector3.zero
+	
+	local function patchSample(sample)
+		if type(sample) == "table" then
+			rawset(sample, "WalkSpeed", speed)
+			if rootCFrame then
+				rawset(sample, "CFrame", rootCFrame)
+				rawset(sample, "Position", rootPosition)
+				rawset(sample, "LinearVelocity", coherentVelocity)
+				rawset(sample, "AngularVelocity", Vector3.zero)
+			end
+		end
+	end
+
+	for _, field in ipairs(INTEGRITY_SAMPLE_FIELDS) do
+		patchSample(rawget(state, field))
+	end
+	for _, sample in pairs(rawget(state, "SampleHistory") or {}) do
+		patchSample(sample)
+	end
+	for _, sample in pairs(rawget(state, "SafeGroundCheckpoints") or {}) do
+		patchSample(sample)
+	end
+
+	local evidence = rawget(state, "Evidence")
+	if type(evidence) == "table" then
+		evidence.Speed = 0
+		evidence.Teleport = 0
+		evidence.Flight = 0
+	end
+
+	local impulse = rawget(state, "ImpulseContext")
+	if type(impulse) == "table" then
+		local horizontalSpeed = math.max(tonumber(impulse.MaxHorizontalSpeed) or 0, speed)
+		local duration = math.max(
+			(tonumber(impulse.ExpiresAt) or 0) - (tonumber(impulse.StartedAt) or 0),
+			LONG_FRAME_CLAMP
+		)
+		impulse.MaxHorizontalSpeed = horizontalSpeed
+		if rootPosition then impulse.OriginPosition = rootPosition end
+		impulse.MaxHorizontalDistance = math.max(
+			tonumber(impulse.MaxHorizontalDistance) or 0,
+			horizontalSpeed * duration + MOVEMENT_BASELINE_PADDING * 2
+		)
+		patchSample(impulse.PreMovementSafeSample)
+	end
+
+	if rawget(state, "CorrectionContext") == nil then
+		rawset(state, "FirstSuspiciousAt", nil)
+		if rawget(state, "ThreatLevel") == "Observing" then
+			rawset(state, "ThreatLevel", "Trusted")
+		end
+	end
+	return true
+end
+
+local function getIntegritySpoof()
+	local env = environment()
+	local holder = env[INTEGRITY_SPOOF_KEY]
+	if type(holder) ~= "table" then
+		holder = {}
+		env[INTEGRITY_SPOOF_KEY] = holder
+	end
+	return holder
+end
+
+local function integrityStateMatches(state, humanoid, root)
+	return type(state) == "table"
+		and rawget(state, "Player") == LocalPlayer
+		and rawget(state, "Character") == LocalPlayer.Character
+		and rawget(state, "Humanoid") == humanoid
+		and rawget(state, "RootPart") == root
+end
+
+local function integrityStateCanTravel(state, humanoid, root)
+	return integrityStateMatches(state, humanoid, root)
+end
+
+local function setIntegritySpoof(humanoid, root, speed)
+	local holder = getIntegritySpoof()
+	local state = holder.State
+	if not integrityStateMatches(state, humanoid, root) then
+		local now = os.clock()
+		if now < (holder.NextSearchAt or 0) then return false end
+		holder.NextSearchAt = now + 0.2
+		state = findIntegrityState(LocalPlayer, humanoid, root)
+	end
+	if not state then
+		return false
+	end
+	if not integrityStateCanTravel(state, humanoid, root) then
+		holder.Enabled = false
+		holder.Humanoid = humanoid
+		holder.RootPart = root
+		holder.State = state
+		return false
+	end
+	holder.NextSearchAt = 0
+	holder.Enabled = true
+	holder.Humanoid = humanoid
+	holder.RootPart = root
+	holder.State = state
+	holder.WalkSpeed = math.clamp(
+		speed * INTEGRITY_SPEED_HEADROOM,
+		MIN_MOVEMENT_SPEED,
+		MAX_MOVEMENT_SPEED * INTEGRITY_SPEED_HEADROOM
+	)
+	holder.TravelVelocity = Vector3.zero
+	patchIntegrityState(state, holder.WalkSpeed, holder.TravelVelocity)
+	return true
+end
+
+local function refreshIntegritySpoof(humanoid, root, speed, travelVelocity)
+	local holder = environment()[INTEGRITY_SPOOF_KEY]
+	if type(holder) ~= "table"
+		or not holder.Enabled
+		or holder.Humanoid ~= humanoid
+		or holder.RootPart ~= root
+		or not integrityStateCanTravel(holder.State, humanoid, root)
+	then
+		return false
+	end
+	holder.WalkSpeed = math.clamp(
+		speed * INTEGRITY_SPEED_HEADROOM,
+		MIN_MOVEMENT_SPEED,
+		MAX_MOVEMENT_SPEED * INTEGRITY_SPEED_HEADROOM
+	)
+	if typeof(travelVelocity) == "Vector3" then
+		holder.TravelVelocity = travelVelocity
+	elseif typeof(holder.TravelVelocity) ~= "Vector3" then
+		holder.TravelVelocity = Vector3.zero
+	end
+	return patchIntegrityState(holder.State, holder.WalkSpeed, holder.TravelVelocity)
+end
+
+local function clearIntegritySpoof(humanoid)
+	local holder = environment()[INTEGRITY_SPOOF_KEY]
+	if type(holder) ~= "table" then return end
+	if humanoid == nil or holder.Humanoid == humanoid then
+		holder.Enabled = false
+		holder.Humanoid = nil
+		holder.RootPart = nil
+		holder.State = nil
+		holder.TravelVelocity = nil
+		holder.NextSearchAt = 0
+	end
+end
+
+-- ===== CORE MOVEMENT ENGINE =====
+local function calculateTravelDuration(distance, speed)
+	if type(distance) ~= "number" or distance <= 0 then return 0 end
+	local safeSpeed = math.clamp(
+		type(speed) == "number" and speed or DEFAULT_MOVEMENT_SPEED,
+		MIN_MOVEMENT_SPEED,
+		MAX_MOVEMENT_SPEED
+	)
+	return distance / safeSpeed
+end
+
+local function moveToPosition(targetPosition, speedInput)
+	local char = LocalPlayer.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+	if not hrp or not hum or hum.Health <= 0 then return false end
+	if typeof(targetPosition) ~= "Vector3" then return false end
+
+	local requestedSpeed = (tonumber(speedInput) or DEFAULT_MOVEMENT_SPEED_INPUT) * MOVEMENT_SPEED_MULTIPLIER
+	local speed = math.clamp(requestedSpeed, MIN_MOVEMENT_SPEED, MAX_MOVEMENT_SPEED)
+
+	stopAllActiveMovements()
+
+	local moveState = { cancelled = false }
+	table.insert(activeMoves, moveState)
+
+	setMovementSpoof(char, speed)
+	setIntegritySpoof(hum, hrp, speed)
+	startHoverPad()
+
+	local startPos = hrp.Position
+	local distance = (targetPosition - startPos).Magnitude
+	local duration = calculateTravelDuration(distance, speed)
+
+	if duration <= 0 or distance < 0.5 then
+		hrp.CFrame = CFrame.new(targetPosition)
+		setTweenArrivalHold(hrp, hrp.CFrame)
+		return true
+	end
+
+	local startTime = os.clock()
+	local lastPos = startPos
+
+	while os.clock() - startTime < duration do
+		if moveState.cancelled or not hrp.Parent or hum.Health <= 0 then
+			clearMovementSpoof()
+			clearIntegritySpoof(hum)
+			stopHoverPad()
+			return false
+		end
+
+		local dt = RunService.Heartbeat:Wait()
+		local elapsed = math.min(os.clock() - startTime, duration)
+		local alpha = elapsed / duration
+		local currentPos = startPos:Lerp(targetPosition, alpha)
+
+		local stepVelocity = (currentPos - lastPos) / math.max(dt, 0.001)
+		lastPos = currentPos
+
+		refreshIntegritySpoof(hum, hrp, speed, stepVelocity)
+
+		hrp.CFrame = CFrame.new(currentPos)
+		hrp.AssemblyLinearVelocity = stepVelocity
+		syncHoverPad(currentPos)
+	end
+
+	if not moveState.cancelled and hrp.Parent then
+		hrp.CFrame = CFrame.new(targetPosition)
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		setTweenArrivalHold(hrp, hrp.CFrame)
+	end
+
+	return not moveState.cancelled
+end
+
+-- ===== UI SYSTEM INITIALIZATION =====
+local function createUI()
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "NatsuEggPanelUI"
+	screenGui.ResetOnSpawn = false
+
+	runtimeEnv.__NatsuParentGui(screenGui)
+	return screenGui
+end
+
+-- Auto-Run Hook & Heartbeat Loop
+RunService.Heartbeat:Connect(function()
+	if tweenArrivalHold then
+		enforceTweenArrivalHold()
+	end
+end)
+
+return {
+	MoveTo = moveToPosition,
+	Stop = stopAllActiveMovements,
+	UI = createUI
+}
